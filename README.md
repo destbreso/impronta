@@ -127,10 +127,49 @@ other is a performance cost, so the default is the one that can only ever be slo
 Plain object keys are always sorted, in both modes: property order is not part of
 the value, and RFC 8785 says the same.
 
+## Every subtree is addressable too
+
+The grammar is length-prefixed and self-delimiting, and that has a consequence
+worth using: a container's token is its header followed by its children's tokens
+verbatim, so every node inside a value already carries a complete canonical form
+of its own. `imprintTree` annotates the whole graph in one traversal.
+
+```ts
+import { imprintTree } from "impronta";
+
+const before = { rows: [{ id: "a" }, { id: "b" }, { id: "c" }] };
+const after  = { rows: [{ id: "b" }, { id: "c" }, { id: "a" }] };
+
+const t0 = imprintTree(before);
+const t1 = imprintTree(after);
+
+t0.get(before.rows[0]) === t1.get(after.rows[2]); // true: the same row, moved
+t0.root === t1.root;                              // false: the value changed
+```
+
+Afterwards, structural equality between any two nodes, from any two values, is a
+string comparison, and it is exact in both directions: equal imprints mean equal
+values, different imprints mean different values. That is a content identity for
+arrays of objects, the thing structural diffs usually ask you to hand-write as an
+`objectHash` callback, and it works for `Map`, `Set`, `TypedArray` and class
+instances rather than only for plain JSON.
+
+One node in the graph has no standalone form, and `get` returns `undefined` for
+it: a subtree containing a back-reference to an ancestor *above* it. The cycle
+token counts levels to climb, so that subtree does not mean the same thing
+anywhere else, and refusing is the only honest answer. A cycle that closes inside
+the node is fine and gets an imprint like anything else.
+
+`imprint` is linear; `imprintTree` is not. A string per node costs the sum of all
+subtree lengths, so O(n × depth). Documents are usually wide and shallow, where
+that is a small constant, but `imprint` remains the right call when you only want
+the root form.
+
 ## API
 
 ```ts
 imprint(value, { order?: "insertion" | "sorted" }): string
+imprintTree(value, { order? }): { root: string, get(node: object): string | undefined }
 jcs(value, { unrepresentable?: "throw" | "json" }): string
 canonicalize(value, { mode?: "imprint" | "jcs", ... }): string
 digest(value, {

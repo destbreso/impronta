@@ -100,7 +100,78 @@ function numberToken(n: number): string {
  *     fully-expanded twin agree. Only true cycles become back-references.
  */
 export function imprint(value: unknown, options: ImprintOptions = {}): string {
+  return encode(value, options, false).root;
+}
+
+/**
+ * The imprint of a value together with the imprint of every object inside it.
+ *
+ * The grammar is length-prefixed and self-delimiting, which has a consequence
+ * worth naming: a container's token is its header followed by its children's
+ * tokens verbatim, so every subtree already carries a complete canonical form
+ * of its own. This exposes it. One traversal annotates the whole graph, and
+ * afterwards structural equality of any two nodes, from any two values, is a
+ * string comparison.
+ *
+ * That is the property a structural diff needs. Two nodes with equal imprints
+ * are the same value, so a diff can stop descending; two nodes with different
+ * imprints differ somewhere, so a diff must. Neither direction can be wrong,
+ * because the encoding is injective. It also supplies a content identity for
+ * arrays of objects, which is what move detection otherwise asks the caller to
+ * hand-write as an `objectHash`.
+ *
+ * Cost: {@link imprint} is linear, this is not. Producing a string per node
+ * costs the sum of all subtree lengths, so O(n * depth) in time and memory.
+ * For ordinary documents, which are wide and shallow, that is a small constant.
+ * For a pathologically deep one it is not, and {@link imprint} remains the
+ * right call when only the root form is wanted.
+ */
+export function imprintTree(value: unknown, options: ImprintOptions = {}): ImprintTree {
+  const { root, nodes, escaping } = encode(value, options, true);
+  return {
+    root,
+    get(node: object): string | undefined {
+      return escaping.has(node) ? undefined : nodes.get(node);
+    },
+  };
+}
+
+/** The result of {@link imprintTree}. */
+export interface ImprintTree {
+  /** The imprint of the whole value. Identical to `imprint(value)`. */
+  readonly root: string;
+  /**
+   * The imprint of one object inside the value, or `undefined` if it has none.
+   *
+   * A node has no standalone imprint in exactly one situation: something inside
+   * it is a back-reference to an ancestor *above* it. A cycle is encoded as the
+   * number of levels to climb, which is a statement about where the node sits,
+   * so such a subtree does not mean the same thing anywhere else and refusing
+   * to give it a content key is the only honest answer. A cycle contained
+   * entirely within the node is fine and gets an imprint like anything else.
+   *
+   * `undefined` also comes back for an object that is not in this value at all,
+   * and for one that was never reached, such as a symbol-keyed property.
+   */
+  get(node: object): string | undefined;
+}
+
+interface Encoded {
+  root: string;
+  nodes: WeakMap<object, string>;
+  escaping: WeakSet<object>;
+}
+
+function encode(value: unknown, options: ImprintOptions, tree: boolean): Encoded {
   const sortCollections = (options.order ?? "insertion") === "sorted";
+
+  // Populated only in tree mode. In the default mode both stay empty and the
+  // walk below is byte for byte the same work it has always done.
+  const nodes = new WeakMap<object, string>();
+  const escaping = new WeakSet<object>();
+  // open[d] is the container currently open at depth d, so a back-reference
+  // can name every subtree it escapes from without searching for them.
+  const open: object[] = [];
 
   // Output buffers. Almost everything appends straight to the root buffer in
   // document order; a buffer is pushed ONLY for a container that has to sort,
@@ -121,6 +192,12 @@ export function imprint(value: unknown, options: ImprintOptions = {}): string {
 
   const emit = (s: string): void => {
     acc[acc.length - 1]!.push(s);
+  };
+
+  /** Emit an object whose whole token is one string, recording it in tree mode. */
+  const leaf = (o: object, token: string): void => {
+    if (tree) nodes.set(o, token);
+    emit(token);
   };
 
   const stack: Op[] = [{ k: 0, v: value, p: "" }];
@@ -151,6 +228,14 @@ export function imprint(value: unknown, options: ImprintOptions = {}): string {
         const frame = frames.pop()!;
         frame.items.sort();
         emit(frame.items.join(""));
+      }
+      if (tree) {
+        // The node's own buffer holds its header and every child token, in
+        // final order. Joining it here is what makes the subtree addressable,
+        // and it is also the whole reason tree mode is not linear.
+        const token = acc.pop()!.join("");
+        nodes.set(op.o, token);
+        emit(token);
       }
       ancestors.delete(op.o);
       depth--;
@@ -189,17 +274,22 @@ export function imprint(value: unknown, options: ImprintOptions = {}): string {
       // depend on where in the document the cycle happens to appear, and stays
       // valid when a container reorders its children.
       emit(`^${depth - seenAt};`);
+      // Every open container below the target now contains a reference that
+      // points outside itself, which is precisely the set of subtrees whose
+      // encoding depends on where they sit. The target itself is unaffected:
+      // the cycle closes inside it.
+      if (tree) for (let d = seenAt + 1; d < depth; d++) escaping.add(open[d]!);
       continue;
     }
 
     // ------------------------------------------------- leaf-like exotic types
     if (v instanceof Date) {
       const time = v.getTime();
-      emit(`d${Number.isNaN(time) ? "NaN" : String(time)};`);
+      leaf(v, `d${Number.isNaN(time) ? "NaN" : String(time)};`);
       continue;
     }
     if (v instanceof RegExp) {
-      emit(`x${raw(v.source)}${raw(v.flags)}`);
+      leaf(v, `x${raw(v.source)}${raw(v.flags)}`);
       continue;
     }
     if (ArrayBuffer.isView(v)) {
@@ -207,12 +297,12 @@ export function imprint(value: unknown, options: ImprintOptions = {}): string {
       const bytes = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
       // The constructor name is part of the encoding: Uint8Array and Int8Array
       // over identical bytes are different values.
-      emit(`y${raw(v.constructor.name)}${bytes.length}:${toHex(bytes)}`);
+      leaf(v, `y${raw(v.constructor.name)}${bytes.length}:${toHex(bytes)}`);
       continue;
     }
     if (v instanceof ArrayBuffer) {
       const bytes = new Uint8Array(v);
-      emit(`B${bytes.length}:${toHex(bytes)}`);
+      leaf(v, `B${bytes.length}:${toHex(bytes)}`);
       continue;
     }
     if (v instanceof WeakMap || v instanceof WeakSet || v instanceof WeakRef) {
@@ -230,6 +320,13 @@ export function imprint(value: unknown, options: ImprintOptions = {}): string {
 
     // ---------------------------------------------------------- containers
     ancestors.set(obj, depth);
+    if (tree) {
+      open[depth] = obj;
+      // Its own buffer, so the close op can join a complete token. The default
+      // mode deliberately does not do this: buffering every level is what made
+      // an earlier version quadratic, and it is a cost only tree mode needs.
+      acc.push([]);
+    }
     depth++;
 
     if (v instanceof Map) {
@@ -306,5 +403,5 @@ export function imprint(value: unknown, options: ImprintOptions = {}): string {
     pushAll(ops);
   }
 
-  return acc[0]!.join("");
+  return { root: acc[0]!.join(""), nodes, escaping };
 }

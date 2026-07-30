@@ -2,6 +2,27 @@
 
 All notable changes to this project are documented here.
 
+## 0.2.0
+
+Adds `imprintTree`, which returns the imprint of a value together with the
+imprint of every object inside it.
+
+- The grammar is length-prefixed and self-delimiting, so a container's token is
+  its header followed by its children's tokens verbatim. Every subtree already
+  carried a complete canonical form; this only exposes it. One traversal
+  annotates the graph, and afterwards structural equality between any two nodes,
+  from any two values, is a string comparison, exact in both directions.
+- A subtree holding a back-reference to an ancestor above it has no standalone
+  form, because the cycle token counts levels to climb. `get` returns
+  `undefined` there rather than a key that would be wrong somewhere else; a
+  cycle closing inside the node is unaffected. This came from measuring the
+  claim rather than reading the grammar: eight of nine shapes encode standalone
+  and the ninth does not.
+- `imprint` is untouched and still linear. Tree mode buffers each level, so it
+  costs O(n × depth), and the shared traversal is guarded so the default path
+  does no extra work. Measured: no change to `imprint`, and `imprintTree` costs
+  1.2x on a wide, shallow document.
+
 ## 0.1.2
 
 No library code changes. Documentation and the report script, and two of these
