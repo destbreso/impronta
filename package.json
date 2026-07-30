@@ -1,0 +1,66 @@
+{
+  "name": "impronta",
+  "version": "0.1.0",
+  "description": "Canonical form and content hash in one call, over the whole JavaScript value graph. Byte-exact RFC 8785 (JCS) for the JSON subset, plus an extended mode that gives BigInt, Map, Set, TypedArray, Date, RegExp, class instances and cycles distinct, tested encodings instead of silently collapsing them. Iterative, so deep input cannot blow the call stack. Zero dependencies, Web Crypto for the digest.",
+  "author": {
+    "name": "David Estevez",
+    "email": "dev.destbreso@gmail.com"
+  },
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "conformance": "serializer-conformance all --only impronta.jcs,impronta.imprint",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "canonicalization",
+    "canonical-json",
+    "jcs",
+    "rfc8785",
+    "content-hash",
+    "content-addressing",
+    "structural-hash",
+    "deterministic",
+    "stable-stringify",
+    "cache-key",
+    "signature",
+    "dedup",
+    "bigint",
+    "map",
+    "set",
+    "typed-array",
+    "zero-dependency",
+    "typescript"
+  ],
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "serializer-conformance": "file:../serializer-conformance",
+    "tsup": "^8.0.0",
+    "typescript": "^5.3.0",
+    "vitest": "^1.2.0"
+  }
+}
