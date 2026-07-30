@@ -60,8 +60,9 @@ adapter:
 | json-canonicalize | 7 | 6/6 | ~1,800 |
 | safe-stable-stringify | 8 | 6/6 | ~4,100 |
 | fast-json-stable-stringify | 7 | 6/6 | ~5,900 |
-| ohash | 1 | not JCS | ~4,800 |
-| stable-hash | 2 | not JCS | ~7,600 |
+| ohash.serialize | 1 | not JCS | ~1,500 |
+| ohash.hash | 1 | not JCS | ~4,800 |
+| stable-hash | 2 | not JCS | ~7,000 |
 | object-hash | 1 | not JCS | ~4,800 |
 | **impronta.imprint** | **0** | not JCS | **unbounded** |
 | **impronta.jcs** | 3, all inherent to JSON | **6/6** | **unbounded** |
@@ -70,16 +71,30 @@ Zero collisions is trivially achievable by refusing everything, and the harness
 counts a refusal as acceptable. impronta answers every probe and the answers are
 distinct, which the test suite asserts separately.
 
-`npx serializer-conformance all` reproduces the table against whatever you have
-installed.
+The full run of every suite is committed at [docs/REPORT.md](docs/REPORT.md),
+and `npm run report` regenerates it and the charts below from this repository's
+own build, so these numbers describe the code in the tree rather than a release.
+`npx serializer-conformance all` reproduces it against whatever you have
+installed. A number in a README is a claim; a command that regenerates it is
+evidence.
+
+The harness publishes its own numbers with impronta deliberately *not*
+installed, because an instrument should describe the field rather than the thing
+its author also ships. This is the other half, where the conflict of interest
+belongs to the package making the claim.
+
+![Collision grid: ten probes against every implementation installed](https://raw.githubusercontent.com/destbreso/impronta/main/docs/collisions.svg)
 
 ## Depth is not a footnote
 
-Every implementation measured is recursive and dies with a `RangeError` between
-roughly 1,800 and 5,900 levels of nesting. Anything doing content addressing eats
-untrusted input by definition, and "send a deeply nested document" is the
-cheapest denial of service there is. impronta's traversal is iterative: depth
-costs heap, not call stack.
+Every implementation measured is recursive and dies with a `RangeError` somewhere
+in the low thousands of levels. Anything doing content addressing eats untrusted
+input by definition, and "send a deeply nested document" is the cheapest denial
+of service there is: a few dozen kilobytes of JSON that `JSON.parse` handles
+without complaint and the fingerprinting step does not. impronta's traversal is
+iterative, so depth costs heap, not call stack.
+
+![Nesting depth before failure, by implementation](https://raw.githubusercontent.com/destbreso/impronta/main/docs/depth.svg)
 
 Iterative is necessary but not sufficient. The first version here was iterative
 *and quadratic*, because it buffered every item and so copied the deeper encoding
