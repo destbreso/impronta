@@ -102,6 +102,12 @@ once per level. It passed every correctness test and took 26 seconds where it no
 takes 0.2. A test asserts the ratio stays linear, because moving a denial of
 service from the call stack to the clock is not a fix.
 
+That is not a claim you have to take on trust either. The harness fits log(time)
+against log(size), so the number below is an exponent: 1 is linear, 2 is
+quadratic. Both modes come out linear on both axes.
+
+![Growth exponent by depth, one bar per implementation, with reference lines at linear and quadratic](https://raw.githubusercontent.com/destbreso/impronta/main/docs/scaling-depth.svg)
+
 ## Ordering: the one debatable choice
 
 `Map` and `Set` preserve iteration order by default, so two Maps with the same

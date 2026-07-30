@@ -31,8 +31,8 @@ orders of magnitude.
 | ohash.hash                 | hash       | ohash@2.0.11                     |
 | stable-hash                | hash       | stable-hash@0.0.6                |
 | object-hash                | hash       | object-hash@3.0.0                |
-| impronta.imprint           | serializer | impronta@0.1.1 (this build)      |
-| impronta.jcs               | jcs        | impronta@0.1.1 (this build)      |
+| impronta.imprint           | serializer | impronta@0.1.2 (this build)      |
+| impronta.jcs               | jcs        | impronta@0.1.2 (this build)      |
 
 ### Notes
 
@@ -204,4 +204,83 @@ reached without failing, which is the signature of an iterative kernel.
 | object-hash                | unbounded |         |
 | impronta.imprint           | unbounded |         |
 | impronta.jcs               | unbounded |         |
+
+## Scaling
+
+How cost grows with input size. The exponent is the slope of log(time)
+against log(size), so 1 is linear and 2 is quadratic, and r² says how well
+the points actually fit a power law: a low r² means the exponent should not
+be quoted on its own.
+
+This measures the *shape*, not a winner. Absolute throughput across these
+subjects would compare unlike things, because a hasher does strictly more
+work than a serializer: it also hashes. The exponent is comparable in a way
+the constant is not.
+
+Surviving deep input by taking thirty seconds over it is not surviving it.
+A quadratic kernel is a denial of service that moved from the call stack to
+the clock, and this suite is where that shows up.
+
+| implementation             | depth exp.    | depth              | width exp.    | width       | notes |
+| -------------------------- | ------------- | ------------------ | ------------- | ----------- | ----- |
+| canonicalize               | 0.96 (r²0.99) | linear             | 1.07 (r²1.00) | linear      |       |
+| json-canonicalize          | 0.92 (r²0.99) | linear             | 1.15 (r²1.00) | linear      |       |
+| safe-stable-stringify      | 1.09 (r²1.00) | linear             | 1.00 (r²0.99) | linear      |       |
+| fast-json-stable-stringify | 0.96 (r²0.99) | linear             | 1.21 (r²1.00) | superlinear |       |
+| ohash.serialize            | 0.69 (r²0.80) | no clean power law | 1.11 (r²1.00) | linear      |       |
+| ohash.hash                 | 0.96 (r²1.00) | linear             | 1.13 (r²1.00) | linear      |       |
+| stable-hash                | 0.84 (r²0.94) | linear             | 1.16 (r²1.00) | linear      |       |
+| object-hash                | 0.94 (r²1.00) | linear             | 1.01 (r²1.00) | linear      |       |
+| impronta.imprint           | 0.89 (r²0.99) | linear             | 1.01 (r²0.98) | linear      |       |
+| impronta.jcs               | 0.91 (r²0.99) | linear             | 1.13 (r²1.00) | linear      |       |
+
+### Milliseconds by depth
+
+| implementation             | 64   | 128  | 256  | 512  | 1,024 |
+| -------------------------- | ---- | ---- | ---- | ---- | ----- |
+| canonicalize               | 0.02 | 0.03 | 0.06 | 0.14 | 0.20  |
+| json-canonicalize          | 0.01 | 0.03 | 0.06 | 0.10 | 0.19  |
+| safe-stable-stringify      | 0.01 | 0.02 | 0.05 | 0.09 | 0.23  |
+| fast-json-stable-stringify | 0.01 | 0.02 | 0.05 | 0.10 | 0.15  |
+| ohash.serialize            | 0.02 | 0.04 | 0.08 | 0.15 | 0.10  |
+| ohash.hash                 | 0.01 | 0.01 | 0.03 | 0.05 | 0.11  |
+| stable-hash                | 0.01 | 0.02 | 0.04 | 0.08 | 0.08  |
+| object-hash                | 0.24 | 0.42 | 0.79 | 1.71 | 3.09  |
+| impronta.imprint           | 0.04 | 0.08 | 0.12 | 0.23 | 0.45  |
+| impronta.jcs               | 0.03 | 0.07 | 0.13 | 0.20 | 0.44  |
+
+### Milliseconds by width
+
+| implementation             | 500  | 1,000 | 2,000 | 4,000 | 8,000 |
+| -------------------------- | ---- | ----- | ----- | ----- | ----- |
+| canonicalize               | 0.11 | 0.19  | 0.46  | 1.03  | 2.01  |
+| json-canonicalize          | 0.08 | 0.19  | 0.42  | 0.92  | 2.01  |
+| safe-stable-stringify      | 0.09 | 0.19  | 0.30  | 0.71  | 1.43  |
+| fast-json-stable-stringify | 0.06 | 0.13  | 0.33  | 0.77  | 1.59  |
+| ohash.serialize            | 0.11 | 0.28  | 0.57  | 1.23  | 2.50  |
+| ohash.hash                 | 0.12 | 0.26  | 0.59  | 1.36  | 2.61  |
+| stable-hash                | 0.06 | 0.12  | 0.27  | 0.64  | 1.43  |
+| object-hash                | 0.28 | 0.51  | 1.08  | 2.23  | 4.46  |
+| impronta.imprint           | 0.12 | 0.23  | 0.34  | 0.88  | 2.05  |
+| impronta.jcs               | 0.11 | 0.23  | 0.47  | 1.09  | 2.42  |
+
+### Output length at 8,000 keys
+
+Deterministic, unlike the timings. A canonical form twice as long costs
+twice as much in the store it is written to and on the wire. A digest is
+constant-length by construction, which is a real advantage and not a
+better score at the same game.
+
+| implementation             | characters |
+| -------------------------- | ---------- |
+| canonicalize               | 101,781    |
+| json-canonicalize          | 101,781    |
+| safe-stable-stringify      | 101,781    |
+| fast-json-stable-stringify | 101,781    |
+| ohash.serialize            | 85,781     |
+| ohash.hash                 | 43         |
+| stable-hash                | 85,781     |
+| object-hash                | 40         |
+| impronta.imprint           | 109,786    |
+| impronta.jcs               | 101,781    |
 

@@ -1,6 +1,6 @@
 {
   "name": "impronta",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Canonical form and content hash in one call, over the whole JavaScript value graph. Byte-exact RFC 8785 (JCS) for the JSON subset, plus an extended mode that gives BigInt, Map, Set, TypedArray, Date, RegExp, class instances and cycles distinct, tested encodings instead of silently collapsing them. Iterative, so deep input cannot blow the call stack. Zero dependencies, Web Crypto for the digest.",
   "author": {
     "name": "David Estevez",
@@ -64,7 +64,7 @@
     "object-hash": "^3.0.0",
     "ohash": "^2.0.11",
     "safe-stable-stringify": "^2.5.0",
-    "serializer-conformance": "^0.2.0",
+    "serializer-conformance": "^0.3.0",
     "stable-hash": "^0.0.6",
     "tsup": "^8.0.0",
     "typescript": "^5.3.0",
