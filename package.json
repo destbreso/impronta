@@ -58,7 +58,7 @@
   ],
   "devDependencies": {
     "@types/node": "^20.11.0",
-    "serializer-conformance": "file:../serializer-conformance",
+    "serializer-conformance": "^0.1.0",
     "tsup": "^8.0.0",
     "typescript": "^5.3.0",
     "vitest": "^1.2.0"
