@@ -76,17 +76,25 @@ const { subjects: installed, missing } = await builtinSubjects();
 const subjects = [...installed.filter((s) => !s.name.startsWith("impronta.")), ...local];
 
 let out = reportHeader(subjects, missing.filter((m) => m !== "impronta"));
-out += reportConformance(subjects.filter((s) => s.kind !== "hash").map(runConformance)) + "\n";
+// Every suite is called through an arrow rather than passed to map directly.
+// `map` supplies (element, index, array), so a bare `map(runDepth)` handed the
+// array index in as runDepth's `ceiling` argument: the first subject got a
+// ceiling of 0, the probe checked depth 0, succeeded, and reported "unbounded".
+// Every implementation in the field came out unbounded in a published chart.
+// The arrow costs nothing and makes the whole class of mistake impossible.
+out += reportConformance(
+  subjects.filter((s) => s.kind !== "hash").map((s) => runConformance(s)),
+) + "\n";
 
-const collisions = subjects.map(runCollisions);
+const collisions = subjects.map((s) => runCollisions(s));
 out += reportCollisions(collisions) + "\n";
-out += reportDeterminism(subjects.map(runDeterminism)) + "\n";
-out += reportCoverage(subjects.map(runCoverage)) + "\n";
+out += reportDeterminism(subjects.map((s) => runDeterminism(s))) + "\n";
+out += reportCoverage(subjects.map((s) => runCoverage(s))) + "\n";
 
-const depth = subjects.map(runDepth);
+const depth = subjects.map((s) => runDepth(s));
 out += reportDepth(depth) + "\n";
 
-const scaling = subjects.map(runScaling);
+const scaling = subjects.map((s) => runScaling(s));
 out += reportScaling(scaling) + "\n";
 
 const preamble = `# impronta, measured against the field

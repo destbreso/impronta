@@ -192,18 +192,18 @@ Deepest input handled before failure. Engine stack limits vary between runs,
 so these are orders of magnitude. `unbounded` means the probe ceiling was
 reached without failing, which is the signature of an iterative kernel.
 
-| implementation             | max depth | failure |
-| -------------------------- | --------- | ------- |
-| canonicalize               | unbounded |         |
-| json-canonicalize          | unbounded |         |
-| safe-stable-stringify      | unbounded |         |
-| fast-json-stable-stringify | unbounded |         |
-| ohash.serialize            | unbounded |         |
-| ohash.hash                 | unbounded |         |
-| stable-hash                | unbounded |         |
-| object-hash                | unbounded |         |
-| impronta.imprint           | unbounded |         |
-| impronta.jcs               | unbounded |         |
+| implementation             | max depth | failure                                      |
+| -------------------------- | --------- | -------------------------------------------- |
+| canonicalize               | 4,095     |                                              |
+| json-canonicalize          | 1,791     |                                              |
+| safe-stable-stringify      | 4,072     | RangeError: Maximum call stack size exceeded |
+| fast-json-stable-stringify | 5,883     |                                              |
+| ohash.serialize            | 1,535     |                                              |
+| ohash.hash                 | 4,809     |                                              |
+| stable-hash                | 7,566     |                                              |
+| object-hash                | 4,807     |                                              |
+| impronta.imprint           | unbounded |                                              |
+| impronta.jcs               | unbounded |                                              |
 
 ## Scaling
 
@@ -221,48 +221,48 @@ Surviving deep input by taking thirty seconds over it is not surviving it.
 A quadratic kernel is a denial of service that moved from the call stack to
 the clock, and this suite is where that shows up.
 
-| implementation             | depth exp.    | depth              | width exp.    | width       | notes |
-| -------------------------- | ------------- | ------------------ | ------------- | ----------- | ----- |
-| canonicalize               | 0.96 (r²0.99) | linear             | 1.07 (r²1.00) | linear      |       |
-| json-canonicalize          | 0.92 (r²0.99) | linear             | 1.15 (r²1.00) | linear      |       |
-| safe-stable-stringify      | 1.09 (r²1.00) | linear             | 1.00 (r²0.99) | linear      |       |
-| fast-json-stable-stringify | 0.96 (r²0.99) | linear             | 1.21 (r²1.00) | superlinear |       |
-| ohash.serialize            | 0.69 (r²0.80) | no clean power law | 1.11 (r²1.00) | linear      |       |
-| ohash.hash                 | 0.96 (r²1.00) | linear             | 1.13 (r²1.00) | linear      |       |
-| stable-hash                | 0.84 (r²0.94) | linear             | 1.16 (r²1.00) | linear      |       |
-| object-hash                | 0.94 (r²1.00) | linear             | 1.01 (r²1.00) | linear      |       |
-| impronta.imprint           | 0.89 (r²0.99) | linear             | 1.01 (r²0.98) | linear      |       |
-| impronta.jcs               | 0.91 (r²0.99) | linear             | 1.13 (r²1.00) | linear      |       |
+| implementation             | depth exp.    | depth       | width exp.    | width       | notes |
+| -------------------------- | ------------- | ----------- | ------------- | ----------- | ----- |
+| canonicalize               | 1.00 (r²1.00) | linear      | 1.07 (r²0.99) | linear      |       |
+| json-canonicalize          | 0.90 (r²0.99) | linear      | 1.13 (r²1.00) | linear      |       |
+| safe-stable-stringify      | 1.22 (r²1.00) | superlinear | 1.09 (r²1.00) | linear      |       |
+| fast-json-stable-stringify | 1.04 (r²1.00) | linear      | 1.16 (r²1.00) | linear      |       |
+| ohash.serialize            | 0.97 (r²1.00) | linear      | 1.14 (r²1.00) | linear      |       |
+| ohash.hash                 | 0.96 (r²1.00) | linear      | 1.14 (r²1.00) | linear      |       |
+| stable-hash                | 0.97 (r²1.00) | linear      | 1.27 (r²1.00) | superlinear |       |
+| object-hash                | 0.82 (r²0.98) | linear      | 1.03 (r²1.00) | linear      |       |
+| impronta.imprint           | 0.97 (r²1.00) | linear      | 1.20 (r²1.00) | superlinear |       |
+| impronta.jcs               | 1.01 (r²1.00) | linear      | 1.15 (r²1.00) | linear      |       |
 
 ### Milliseconds by depth
 
 | implementation             | 64   | 128  | 256  | 512  | 1,024 |
 | -------------------------- | ---- | ---- | ---- | ---- | ----- |
-| canonicalize               | 0.02 | 0.03 | 0.06 | 0.14 | 0.20  |
-| json-canonicalize          | 0.01 | 0.03 | 0.06 | 0.10 | 0.19  |
-| safe-stable-stringify      | 0.01 | 0.02 | 0.05 | 0.09 | 0.23  |
-| fast-json-stable-stringify | 0.01 | 0.02 | 0.05 | 0.10 | 0.15  |
-| ohash.serialize            | 0.02 | 0.04 | 0.08 | 0.15 | 0.10  |
-| ohash.hash                 | 0.01 | 0.01 | 0.03 | 0.05 | 0.11  |
-| stable-hash                | 0.01 | 0.02 | 0.04 | 0.08 | 0.08  |
-| object-hash                | 0.24 | 0.42 | 0.79 | 1.71 | 3.09  |
-| impronta.imprint           | 0.04 | 0.08 | 0.12 | 0.23 | 0.45  |
-| impronta.jcs               | 0.03 | 0.07 | 0.13 | 0.20 | 0.44  |
+| canonicalize               | 0.01 | 0.02 | 0.03 | 0.07 | 0.14  |
+| json-canonicalize          | 0.01 | 0.03 | 0.06 | 0.09 | 0.19  |
+| safe-stable-stringify      | 0.00 | 0.01 | 0.02 | 0.05 | 0.13  |
+| fast-json-stable-stringify | 0.01 | 0.02 | 0.05 | 0.10 | 0.17  |
+| ohash.serialize            | 0.01 | 0.01 | 0.02 | 0.05 | 0.10  |
+| ohash.hash                 | 0.01 | 0.01 | 0.03 | 0.05 | 0.10  |
+| stable-hash                | 0.01 | 0.02 | 0.03 | 0.06 | 0.11  |
+| object-hash                | 0.32 | 0.41 | 0.79 | 1.48 | 2.97  |
+| impronta.imprint           | 0.01 | 0.02 | 0.04 | 0.08 | 0.15  |
+| impronta.jcs               | 0.01 | 0.02 | 0.04 | 0.09 | 0.17  |
 
 ### Milliseconds by width
 
 | implementation             | 500  | 1,000 | 2,000 | 4,000 | 8,000 |
 | -------------------------- | ---- | ----- | ----- | ----- | ----- |
-| canonicalize               | 0.11 | 0.19  | 0.46  | 1.03  | 2.01  |
-| json-canonicalize          | 0.08 | 0.19  | 0.42  | 0.92  | 2.01  |
-| safe-stable-stringify      | 0.09 | 0.19  | 0.30  | 0.71  | 1.43  |
-| fast-json-stable-stringify | 0.06 | 0.13  | 0.33  | 0.77  | 1.59  |
-| ohash.serialize            | 0.11 | 0.28  | 0.57  | 1.23  | 2.50  |
-| ohash.hash                 | 0.12 | 0.26  | 0.59  | 1.36  | 2.61  |
-| stable-hash                | 0.06 | 0.12  | 0.27  | 0.64  | 1.43  |
-| object-hash                | 0.28 | 0.51  | 1.08  | 2.23  | 4.46  |
-| impronta.imprint           | 0.12 | 0.23  | 0.34  | 0.88  | 2.05  |
-| impronta.jcs               | 0.11 | 0.23  | 0.47  | 1.09  | 2.42  |
+| canonicalize               | 0.11 | 0.18  | 0.45  | 0.95  | 2.00  |
+| json-canonicalize          | 0.08 | 0.17  | 0.39  | 0.98  | 1.73  |
+| safe-stable-stringify      | 0.07 | 0.16  | 0.30  | 0.76  | 1.48  |
+| fast-json-stable-stringify | 0.06 | 0.13  | 0.34  | 0.71  | 1.53  |
+| ohash.serialize            | 0.12 | 0.25  | 0.62  | 1.34  | 2.56  |
+| ohash.hash                 | 0.11 | 0.25  | 0.60  | 1.30  | 2.60  |
+| stable-hash                | 0.05 | 0.12  | 0.28  | 0.72  | 1.65  |
+| object-hash                | 0.27 | 0.52  | 1.12  | 2.24  | 4.55  |
+| impronta.imprint           | 0.07 | 0.15  | 0.40  | 0.90  | 1.85  |
+| impronta.jcs               | 0.11 | 0.22  | 0.54  | 1.12  | 2.66  |
 
 ### Output length at 8,000 keys
 

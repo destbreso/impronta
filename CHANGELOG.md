@@ -4,7 +4,15 @@ All notable changes to this project are documented here.
 
 ## 0.1.2
 
-No code changes. Documentation only, and one of them is a fix.
+No library code changes. Documentation and the report script, and two of these
+are fixes to charts that were saying something false.
+
+- **The depth chart claimed every implementation was unbounded.** The report
+  script passed each suite straight to `Array.map`, which supplies
+  `(element, index, array)`, so the array index arrived as `runDepth`'s
+  `ceiling` argument: the first subject was probed to depth 0, succeeded, and
+  was recorded as having no limit. The chart contradicted the table printed
+  beside it. Every suite is now called through an arrow.
 
 - **The README charts were unreadable on npm.** They carried a
   `prefers-color-scheme` block, and an SVG embedded with `<img>` resolves that
