@@ -34,7 +34,9 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "prepublishOnly": "npm run build",
-    "report": "npm run build && node scripts/report.mjs"
+    "report": "npm run build && node scripts/report.mjs",
+    "differential": "npm run build && node scripts/differential.mjs",
+    "sameas": "npm run build && node scripts/sameas.mjs"
   },
   "keywords": [
     "canonicalization",
