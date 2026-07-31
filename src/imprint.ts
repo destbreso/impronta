@@ -73,12 +73,14 @@ interface Op {
   par: Op | null;
   seg: string | number;
   segKind: SegKind;
+  /** k=2 only: which span slot this container claimed when it opened. */
+  slot: number;
 }
 
 const enum SegKind { Root, Key, Index, MapKey, MapValue, SetMember }
 
 function op(k: Op["k"], v: unknown, s: string, par: Op | null, seg: string | number, segKind: SegKind): Op {
-  return { k, v, s, o: null, sort: false, par, seg, segKind };
+  return { k, v, s, o: null, sort: false, par, seg, segKind, slot: -1 };
 }
 
 /** Rebuild the human-readable path to a value, on the error path only. */
@@ -187,20 +189,220 @@ export function imprint(value: unknown, options: ImprintOptions = {}): string {
  * arrays of objects, which is what move detection otherwise asks the caller to
  * hand-write as an `objectHash`.
  *
- * Cost: {@link imprint} is linear, this is not. Producing a string per node
- * costs the sum of all subtree lengths, so O(n * depth) in time and memory.
- * For ordinary documents, which are wide and shallow, that is a small constant.
- * For a pathologically deep one it is not, and {@link imprint} remains the
- * right call when only the root form is wanted.
+ * Cost: linear, in the default insertion order. A node's token is a CONTIGUOUS
+ * range of the root, because the grammar is self-delimiting and nothing is
+ * interleaved, so this records a start and a length per node instead of a
+ * string per node. The earlier version materialized every token, which cost the
+ * sum of all subtree lengths: O(n * depth) in time and memory, invisible on the
+ * wide shallow documents everybody tests with and fatal on a deep one, where a
+ * 160 KB chain of nested objects reached 2.6 GB of heap.
+ *
+ * `order: "sorted"` still materializes. Sorting reorders a container's items at
+ * close, so a child's token is no longer where the walk emitted it, and offsets
+ * into the root would point at the wrong text. That path keeps the old cost.
+ *
+ * Prefer {@link ImprintTree.sameAs} over comparing two {@link ImprintTree.get}
+ * results. `get` has to build the string; `sameAs` does not, and it answers in
+ * constant time unless the two really are equal.
  */
 export function imprintTree(value: unknown, options: ImprintOptions = {}): ImprintTree {
-  const { root, nodes, escaping } = encode(value, options, true);
-  return {
+  const { root, nodes, escaping, slotOf, starts, lengths, claimed, addressable } = encode(value, options, true);
+  const spanStarts = starts();
+  const spanLengths = lengths();
+
+  // Materialize every token, but only when that is affordable.
+  //
+  // Two representations, and neither wins everywhere. Holding a string per node
+  // makes comparison a native string equality, which V8 does with a length
+  // check and a memcmp and which nothing written in JavaScript comes close to.
+  // It also costs the sum of all subtree lengths, which on a wide shallow
+  // document is a small multiple of the document and on a deep one is
+  // quadratic: that is what made a 160 KB chain cost 2.6 GB.
+  //
+  // The offsets pass above already knows every node's length, so the sum is
+  // free to compute and the choice can be made on the real number rather than
+  // on a guess about the shape. Shallow documents get the fast comparison,
+  // deep ones stay linear, and nothing has to be assumed about either.
+  let materialized: WeakMap<object, string> | null = null;
+  if (addressable) {
+    let total = 0;
+    for (let i = 0; i < claimed.length; i++) total += spanLengths[i]!;
+    if (total <= Math.min(root.length * 16, 64_000_000)) {
+      materialized = new WeakMap<object, string>();
+      for (let i = 0; i < claimed.length; i++) {
+        const at = spanStarts[i]!;
+        materialized.set(claimed[i]!, root.slice(at, at + spanLengths[i]!));
+      }
+    }
+  }
+  const stored = materialized;
+
+  // Hashing a range, by direct scan at first and from a prefix table later.
+  //
+  // The table answers in constant time but costs two Uint32Arrays the length of
+  // the whole root, and on a wide shallow document only a couple of nodes are
+  // ever long enough to be hashed at all: building it for them cost more than
+  // it saved and showed up as 9% of a diff plus a third more collector time.
+  // On a deep document every node is hashed and the table is essential. So the
+  // first few hashes are scanned directly and the table appears only if the
+  // caller keeps asking. Both routes compute the same polynomial, so a value
+  // hashed before the switch still matches one hashed after.
+  let prefix: Prefix | null = null;
+  let hashes = 0;
+  const PREFIX_AFTER = 32;
+  const hashRange = (at: number, length: number): number => {
+    if (prefix !== null) return rangeHash(prefix, at, length);
+    if (++hashes >= PREFIX_AFTER) {
+      prefix = buildPrefix(root);
+      return rangeHash(prefix, at, length);
+    }
+    let acc = 0;
+    for (let i = 0; i < length; i++) acc = (Math.imul(acc, HASH_BASE) + root.charCodeAt(at + i)) >>> 0;
+    return acc;
+  };
+
+  const core: TreeCore = {
+    root,
+    addressable: addressable && stored === null,
+    startOf: (node) => {
+      if (escaping.has(node)) return undefined;
+      const slot = slotOf(node);
+      return slot === undefined ? undefined : spanStarts[slot];
+    },
+    lengthOf: (node) => {
+      if (escaping.has(node)) return undefined;
+      const slot = slotOf(node);
+      return slot === undefined ? undefined : spanLengths[slot];
+    },
+    text: (node) => (escaping.has(node) ? undefined : (stored ?? nodes).get(node)),
+    hashRange,
+  };
+
+  const tree: ImprintTree = {
     root,
     get(node: object): string | undefined {
-      return escaping.has(node) ? undefined : nodes.get(node);
+      if (escaping.has(node)) return undefined;
+      if (!addressable) return nodes.get(node);
+      if (stored !== null) return stored.get(node);
+      const slot = slotOf(node);
+      if (slot === undefined) return undefined;
+      return root.slice(spanStarts[slot], spanStarts[slot]! + spanLengths[slot]!);
+    },
+    sameAs(node: object, other: ImprintTree, otherNode: object): boolean {
+      const right = CORES.get(other);
+      return right === undefined ? false : sameContent(core, node, right, otherNode);
+    },
+    size(node: object): number | undefined {
+      if (escaping.has(node)) return undefined;
+      if (!addressable) return nodes.get(node)?.length;
+      const slot = slotOf(node);
+      return slot === undefined ? undefined : spanLengths[slot];
+    },
+    keyWithin(node: object, inlineLimit: number): string | number | undefined {
+      if (escaping.has(node)) return undefined;
+      if (stored !== null) {
+        const text = stored.get(node);
+        if (text === undefined) return undefined;
+        return text.length <= inlineLimit ? text : hashString(text);
+      }
+      if (!addressable) {
+        const text = nodes.get(node);
+        if (text === undefined) return undefined;
+        return text.length <= inlineLimit ? text : hashString(text);
+      }
+      const slot = slotOf(node);
+      if (slot === undefined) return undefined;
+      const at = spanStarts[slot]!;
+      const length = spanLengths[slot]!;
+      return length <= inlineLimit ? root.slice(at, at + length) : hashRange(at, length);
+    },
+    bucket(node: object): number | undefined {
+      if (escaping.has(node)) return undefined;
+      if (!addressable) {
+        const text = nodes.get(node);
+        return text === undefined ? undefined : hashString(text);
+      }
+      const slot = slotOf(node);
+      if (slot === undefined) return undefined;
+      return hashRange(spanStarts[slot]!, spanLengths[slot]!);
     },
   };
+  CORES.set(tree, core);
+  return tree;
+}
+
+/**
+ * Everything one tree needs to answer a question about a node in ANOTHER tree.
+ *
+ * Kept in a side table rather than on the returned object so the public shape
+ * stays exactly the three documented methods.
+ */
+interface TreeCore {
+  root: string;
+  /** False when tokens are materialized instead of addressed by offset. */
+  addressable: boolean;
+  startOf(node: object): number | undefined;
+  lengthOf(node: object): number | undefined;
+  text(node: object): string | undefined;
+  hashRange(at: number, length: number): number;
+}
+
+const CORES = new WeakMap<ImprintTree, TreeCore>();
+
+interface Prefix {
+  h: Uint32Array;
+  p: Uint32Array;
+}
+
+// A polynomial rolling hash over the root, so the hash of any node is O(1)
+// rather than O(its length). Odd base, arithmetic mod 2^32 via Math.imul.
+//
+// It is a BUCKETING device and nothing else. Mod 2^32 polynomial hashing is
+// easy to collide on purpose, which does not matter here because every reported
+// match is confirmed against the actual characters. A collision costs one
+// comparison, never a wrong answer.
+const HASH_BASE = 131;
+
+function buildPrefix(s: string): Prefix {
+  const n = s.length;
+  const h = new Uint32Array(n + 1);
+  const p = new Uint32Array(n + 1);
+  p[0] = 1;
+  for (let i = 0; i < n; i++) {
+    h[i + 1] = (Math.imul(h[i]!, HASH_BASE) + s.charCodeAt(i)) >>> 0;
+    p[i + 1] = Math.imul(p[i]!, HASH_BASE) >>> 0;
+  }
+  return { h, p };
+}
+
+const rangeHash = (pre: Prefix, start: number, length: number): number =>
+  (pre.h[start + length]! - Math.imul(pre.h[start]!, pre.p[length]!)) >>> 0;
+
+function hashString(s: string): number {
+  let acc = 0;
+  for (let i = 0; i < s.length; i++) acc = (Math.imul(acc, HASH_BASE) + s.charCodeAt(i)) >>> 0;
+  return acc;
+}
+
+/** Compare two nodes without building either string. */
+function sameContent(left: TreeCore, a: object, right: TreeCore, b: object): boolean {
+  if (!left.addressable || !right.addressable) {
+    const x = left.text(a);
+    const y = right.text(b);
+    return x !== undefined && x === y;
+  }
+  const sa = left.startOf(a);
+  const sb = right.startOf(b);
+  if (sa === undefined || sb === undefined) return false;
+  const la = left.lengthOf(a)!;
+  if (la !== right.lengthOf(b)!) return false;
+  // Same tree, same offset: the same node, so no need to look at the text.
+  if (left === right && sa === sb) return true;
+  if (left.hashRange(sa, la) !== right.hashRange(sb, la)) return false;
+  const x = left.root;
+  const y = right.root;
+  for (let i = 0; i < la; i++) if (x.charCodeAt(sa + i) !== y.charCodeAt(sb + i)) return false;
+  return true;
 }
 
 /** The result of {@link imprintTree}. */
@@ -219,14 +421,77 @@ export interface ImprintTree {
    *
    * `undefined` also comes back for an object that is not in this value at all,
    * and for one that was never reached, such as a symbol-keyed property.
+   *
+   * This builds a string. When the question is only whether two nodes agree,
+   * {@link ImprintTree.sameAs} answers it without building one.
    */
   get(node: object): string | undefined;
+  /**
+   * Whether two nodes have the same imprint, without building either string.
+   *
+   * The nodes may come from different trees, which is the point: a diff holds
+   * one tree per document and asks this across them. Equal imprints mean equal
+   * values, in both directions, so this is exact and not a heuristic.
+   *
+   * Constant time when the two differ in length or in their bucket, which is
+   * the common case while descending; a full comparison only happens when they
+   * really are equal. False if either node has no standalone imprint.
+   */
+  sameAs(node: object, other: ImprintTree, otherNode: object): boolean;
+  /**
+   * A cheap grouping key for a node's content, or `undefined` if it has none.
+   *
+   * Equal imprints always give the same bucket. Different imprints almost
+   * always give different ones, but MAY collide, so a caller matching values by
+   * content must confirm with {@link ImprintTree.sameAs} rather than trust this
+   * alone. It exists so that grouping a thousand elements by content costs a
+   * thousand integer comparisons instead of a thousand string builds.
+   */
+  bucket(node: object): number | undefined;
+  /**
+   * How long this node's imprint is, without building it.
+   *
+   * Useful as a cheap first discriminator, and as a way to decide whether
+   * building the string is worth it at all: the cost of {@link ImprintTree.get}
+   * is exactly this number.
+   */
+  size(node: object): number | undefined;
+  /**
+   * A comparison key for a node, materializing the token only when it is cheap.
+   *
+   * Returns the token itself when it is at most `inlineLimit` characters, and
+   * the {@link ImprintTree.bucket} otherwise. This exists because the caller
+   * that wants it (a structural diff, keying every node it walks) would
+   * otherwise ask for the size and then the value, paying two lookups per node
+   * to answer one question.
+   *
+   * A token never begins with `#` or a digit-only form that could be confused
+   * with a bucket, and the two returns are distinguishable by `typeof`, so a
+   * caller can key on the result directly. Equal nodes have equal sizes, so the
+   * two are never keyed by different routes; a numeric result still has to be
+   * confirmed with {@link ImprintTree.sameAs}, since buckets may collide.
+   */
+  keyWithin(node: object, inlineLimit: number): string | number | undefined;
 }
 
 interface Encoded {
   root: string;
+  /** Materialized tokens. Populated only when `addressable` is false. */
   nodes: WeakMap<object, string>;
   escaping: WeakSet<object>;
+  /** A node's slot in `starts` and `lengths`, when `addressable`. */
+  slotOf(node: object): number | undefined;
+  starts(): Uint32Array;
+  lengths(): Uint32Array;
+  /** Every node that claimed a slot, in slot order. */
+  claimed: object[];
+  /**
+   * Whether node tokens are contiguous ranges of `root`.
+   *
+   * True except in sorted mode, where a container's items are reordered when it
+   * closes, so where the walk emitted a child is not where it ends up.
+   */
+  addressable: boolean;
 }
 
 function encode(value: unknown, options: ImprintOptions, tree: boolean): Encoded {
@@ -236,6 +501,41 @@ function encode(value: unknown, options: ImprintOptions, tree: boolean): Encoded
   // walk below is byte for byte the same work it has always done.
   const nodes = new WeakMap<object, string>();
   const escaping = new WeakSet<object>();
+  // Sorting reorders a container's items when it closes, so a child's token
+  // stops being where the walk emitted it and an offset into the root would
+  // address the wrong text. Only that mode falls back to materializing.
+  const addressable = tree && !sortCollections;
+  // One WeakMap write per node, not two.
+  //
+  // The span is two numbers, and holding them in two WeakMaps cost two hashed
+  // writes per node, which on a wide shallow document is more than the short
+  // join it replaced. So the WeakMap holds a SLOT and the numbers live in
+  // parallel typed arrays, and the close op carries its own slot so closing
+  // touches no map at all.
+  // Deliberately NOT filled during the walk. Which node owns which slot is only
+  // needed if the tree ends up addressing tokens by offset, and the walk cannot
+  // know that yet, so paying a hashed write per node here would be a write the
+  // common case throws away. `claimed` is slot-ordered, so the map can be built
+  // afterwards, once, and only if it is going to be read.
+  let slots = 0;
+  let starts = new Uint32Array(256);
+  let lengths = new Uint32Array(256);
+  const claimed: object[] = [];
+  const claimSlot = (o: object): number => {
+    claimed.push(o);
+    void o;
+    if (slots === starts.length) {
+      const grownStarts = new Uint32Array(slots * 2);
+      grownStarts.set(starts);
+      starts = grownStarts;
+      const grownLengths = new Uint32Array(slots * 2);
+      grownLengths.set(lengths);
+      lengths = grownLengths;
+    }
+    return slots++;
+  };
+  // Characters emitted so far, which is where the next token begins.
+  let pos = 0;
   // open[d] is the container currently open at depth d, so a back-reference
   // can name every subtree it escapes from without searching for them.
   const open: object[] = [];
@@ -271,11 +571,18 @@ function encode(value: unknown, options: ImprintOptions, tree: boolean): Encoded
 
   const emit = (s: string): void => {
     cur.push(s);
+    pos += s.length;
   };
 
   /** Emit an object whose whole token is one string, recording it in tree mode. */
   const leaf = (o: object, token: string): void => {
-    if (tree) nodes.set(o, token);
+    if (addressable) {
+      const slot = claimSlot(o);
+      starts[slot] = pos;
+      lengths[slot] = token.length;
+    } else if (tree) {
+      nodes.set(o, token);
+    }
     emit(token);
   };
 
@@ -357,10 +664,13 @@ function encode(value: unknown, options: ImprintOptions, tree: boolean): Encoded
         frame.items.sort();
         emit(frame.items.join(""));
       }
-      if (tree) {
-        // The node's own buffer holds its header and every child token, in
-        // final order. Joining it here is what makes the subtree addressable,
-        // and it is also the whole reason tree mode is not linear.
+      if (addressable) {
+        // Everything between the header and here belongs to this node, and it
+        // is already sitting in the one output buffer in final order. Recording
+        // where it starts and how long it is costs two numbers; joining it into
+        // a string of its own is what used to cost O(n * depth).
+        lengths[cursor.slot] = pos - starts[cursor.slot]!;
+      } else if (tree) {
         const token = closeBuffer();
         nodes.set(cursor.o!, token);
         emit(token);
@@ -447,16 +757,24 @@ function encode(value: unknown, options: ImprintOptions, tree: boolean): Encoded
 
     // ---------------------------------------------------------- containers
     ancestors.set(obj, depth);
-    if (tree) {
-      open[depth] = obj;
-      // Its own buffer, so the close op can join a complete token. The default
-      // mode deliberately does not do this: buffering every level is what made
-      // an earlier version quadratic, and it is a cost only tree mode needs.
-      openBuffer();
-    }
-    depth++;
     const close = op(2, null, "", null, "", SegKind.Root);
     close.o = obj;
+    if (tree) {
+      open[depth] = obj;
+      // Where this container's token begins. A class instance's `c<name>`
+      // prefix has not been emitted yet, and it is part of the token, so this
+      // has to be recorded before the header goes out.
+      if (addressable) {
+        const slot = claimSlot(obj);
+        starts[slot] = pos;
+        close.slot = slot;
+      } else {
+        // Sorted mode still needs a buffer per container, because the close op
+        // has to join a complete token to record it.
+        openBuffer();
+      }
+    }
+    depth++;
 
     // A run of primitive children collapses into one string rather than one
     // stack entry each, and the run that precedes a child worth descending into
@@ -578,5 +896,24 @@ function encode(value: unknown, options: ImprintOptions, tree: boolean): Encoded
     pushAll(ops);
   }
 
-  return { root: acc[0]!.join(""), nodes, escaping };
+  // Built on demand, from the slot-ordered list, and only by a caller that
+  // actually needs offset lookups.
+  let slotOf: WeakMap<object, number> | null = null;
+  const spanOf = (node: object): number | undefined => {
+    if (slotOf === null) {
+      slotOf = new WeakMap<object, number>();
+      for (let i = 0; i < claimed.length; i++) slotOf.set(claimed[i]!, i);
+    }
+    return slotOf.get(node);
+  };
+  return {
+    root: acc[0]!.join(""),
+    nodes,
+    escaping,
+    slotOf: spanOf,
+    starts: () => starts,
+    lengths: () => lengths,
+    claimed,
+    addressable,
+  };
 }

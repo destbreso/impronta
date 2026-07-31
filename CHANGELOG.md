@@ -2,6 +2,43 @@
 
 All notable changes to this project are documented here.
 
+## 0.3.0
+
+`imprintTree` is linear in depth instead of quadratic, and gains three methods
+for asking about a node without building its string. `imprint` is untouched and
+the encoding is unchanged, byte for byte.
+
+The old tree mode gave every subtree its own materialized token, which costs the
+sum of all subtree lengths: fine on the wide shallow documents everybody tests
+with, and quadratic on a deep one, where a 160 KB chain of nested objects
+reached 2.6 GB of heap. A node's token is a CONTIGUOUS range of the root,
+because the grammar is self-delimiting, so a start and a length are enough.
+
+New on `ImprintTree`, all of them exact:
+
+- `sameAs(node, otherTree, otherNode)`: whether two nodes agree, across trees,
+  without building either string. Leaves on a length mismatch in the common case.
+- `bucket(node)`: a cheap grouping key. May collide, so confirm with `sameAs`.
+- `size(node)`: the length of the imprint, which is what `get` would cost.
+- `keyWithin(node, inlineLimit)`: the token when it is short enough to be worth
+  materializing, the bucket otherwise, in one lookup.
+
+Both representations are kept, because neither wins everywhere. A string per
+node makes comparison a native string equality, which V8 does with a memcmp and
+which nothing written in JavaScript matches; offsets make deep documents
+possible. The offsets pass already knows every node's length, so the total is
+free to compute, and the choice is made on that number rather than on a guess
+about the shape. `order: "sorted"` always materializes, since sorting moves a
+child's token away from where the walk emitted it.
+
+Measured against 0.2.1, same machine, interleaved runs and medians: a deep chain
+is about 10x faster in tree mode with memory falling from 322 MB to 5 MB at eight
+thousand levels, and wide shallow documents are unchanged to slightly better.
+
+Verified byte for byte against the published encoding over 80,000 encodings in
+both ordering modes, and `sameAs` and `bucket` agreed with string comparison on
+185,000 node pairs, including cycles.
+
 ## 0.2.1
 
 Faster, with byte-identical output. No API change, no grammar change.
