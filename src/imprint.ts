@@ -45,12 +45,79 @@
 
 import { UnrepresentableValueError, type ImprintOptions } from "./types.js";
 
-type Op =
-  | { k: 0; v: unknown; p: string }        // visit a value
-  | { k: 1; s: string }                    // emit a literal
-  | { k: 2; o: object; sort: boolean }     // close a container
-  | { k: 3 }                               // begin one item
-  | { k: 4 };                              // end one item
+// One shape for every entry on the work stack, rather than five.
+//
+// `k` selects the meaning of the rest, and the fields that do not apply are
+// left null. Five different object shapes made every `op.k` read polymorphic,
+// and the stack is the hottest loop in the library.
+//
+//   k=0  visit `v`, after emitting the literal `s` (its key token, or "")
+//   k=1  emit the literal `s`
+//   k=2  close container `o`, sorting its buffered items if `sort`
+//   k=3  begin one sortable item
+//   k=4  end one sortable item
+interface Op {
+  k: 0 | 1 | 2 | 3 | 4;
+  v: unknown;
+  s: string;
+  o: object | null;
+  sort: boolean;
+  /**
+   * Where this value sits, for an error message and nothing else.
+   *
+   * A parent link and one raw segment, never a built string. Composing the
+   * path eagerly cost 15% of every run to produce text that is read only when
+   * a value turns out to have no canonical form, which for almost every caller
+   * is never. {@link formatPath} walks this chain on the way out of a throw.
+   */
+  par: Op | null;
+  seg: string | number;
+  segKind: SegKind;
+}
+
+const enum SegKind { Root, Key, Index, MapKey, MapValue, SetMember }
+
+function op(k: Op["k"], v: unknown, s: string, par: Op | null, seg: string | number, segKind: SegKind): Op {
+  return { k, v, s, o: null, sort: false, par, seg, segKind };
+}
+
+/** Rebuild the human-readable path to a value, on the error path only. */
+function formatPath(node: Op | null): string {
+  if (node === null) return "";
+  const parent = formatPath(node.par);
+  switch (node.segKind) {
+    case SegKind.Root: return "";
+    case SegKind.Key: return parent ? `${parent}.${node.seg as string}` : (node.seg as string);
+    case SegKind.Index: return `${parent}[${node.seg}]`;
+    case SegKind.MapKey: return `${parent}<key ${node.seg}>`;
+    case SegKind.MapValue: return `${parent}<value ${node.seg}>`;
+    case SegKind.SetMember: return `${parent}<member ${node.seg}>`;
+  }
+}
+
+/**
+ * The token for a value that has no children, or null if it needs the walk.
+ *
+ * This is what lets a run of primitive siblings collapse into one string
+ * instead of one stack entry each. An array of five thousand numbers used to
+ * allocate five thousand work items to emit five thousand short strings; now it
+ * allocates one.
+ *
+ * Symbols and functions deliberately return null. They have no canonical form
+ * and must throw, and the throw needs the position, so they take the slow path
+ * where a stack entry carries the parent link.
+ */
+function primitiveToken(v: unknown): string | null {
+  if (v === null) return "z";
+  switch (typeof v) {
+    case "undefined": return "u";
+    case "boolean": return v ? "t" : "f";
+    case "number": return numberToken(v);
+    case "bigint": return `i${v.toString()};`;
+    case "string": return str(v);
+    default: return null;
+  }
+}
 
 const HEX = Array.from({ length: 256 }, (_, i) => i.toString(16).padStart(2, "0"));
 
@@ -184,6 +251,18 @@ function encode(value: unknown, options: ImprintOptions, tree: boolean): Encoded
   // surface, it has moved it from the call stack to the clock. Buffering only
   // where sorting genuinely requires it keeps the common path linear.
   const acc: string[][] = [[]];
+  // The buffer at the top of `acc`, kept in a variable so the common case is a
+  // field write rather than a length lookup and an index on every token.
+  let cur: string[] = acc[0]!;
+  const openBuffer = (): void => {
+    cur = [];
+    acc.push(cur);
+  };
+  const closeBuffer = (): string => {
+    const done = acc.pop()!.join("");
+    cur = acc[acc.length - 1]!;
+    return done;
+  };
   // One frame per open SORTING container, collecting children as whole items.
   const frames: { items: string[] }[] = [];
 
@@ -191,7 +270,7 @@ function encode(value: unknown, options: ImprintOptions, tree: boolean): Encoded
   let depth = 0;
 
   const emit = (s: string): void => {
-    acc[acc.length - 1]!.push(s);
+    cur.push(s);
   };
 
   /** Emit an object whose whole token is one string, recording it in tree mode. */
@@ -200,31 +279,80 @@ function encode(value: unknown, options: ImprintOptions, tree: boolean): Encoded
     emit(token);
   };
 
-  const stack: Op[] = [{ k: 0, v: value, p: "" }];
+  const root = op(0, value, "", null, "", SegKind.Root);
+  const stack: Op[] = [root];
   const pushAll = (ops: Op[]): void => {
     for (let i = ops.length - 1; i >= 0; i--) stack.push(ops[i]!);
   };
 
   /** Wrap a child's ops so the container sees it as one sortable unit. */
-  const item = (ops: Op[]): Op[] => [{ k: 3 }, ...ops, { k: 4 }];
+  const item = (wrapped: Op[]): Op[] => [
+    op(3, null, "", null, "", SegKind.Root),
+    ...wrapped,
+    op(4, null, "", null, "", SegKind.Root),
+  ];
+
+  // The children of the container currently being expanded, reused rather than
+  // reallocated. See where it is cleared, below, for why that is safe.
+  const ops: Op[] = [];
+  let pending = "";
+  let parent: Op | null = null;
+  const descend = (child: unknown, seg: string | number, segKind: SegKind): void => {
+    ops.push(op(0, child, pending, parent, seg, segKind));
+    pending = "";
+  };
+  const flush = (): void => {
+    if (pending !== "") {
+      ops.push(op(1, null, pending, null, "", SegKind.Root));
+      pending = "";
+    }
+  };
+
+  // Interned key tokens. A document of rows repeats the same handful of field
+  // names on every one of them, and rebuilding `s4:name` five thousand times is
+  // waste.
+  //
+  // It gives up when the keys turn out not to repeat. A flat dictionary of five
+  // thousand distinct keys never hits, and paying a failed lookup and an insert
+  // for each of them made that shape measurably SLOWER than not caching at all.
+  // So the cache is bounded, and after a sample of lookups with a poor hit rate
+  // it switches itself off for the rest of the document. Both shapes then come
+  // out ahead, where either fixed choice gives one of them up.
+  const keyTokens = new Map<string, string>();
+  let caching = true;
+  let lookups = 0;
+  let hits = 0;
+  const keyToken = (key: string): string => {
+    if (!caching) return str(key);
+    lookups++;
+    const found = keyTokens.get(key);
+    if (found !== undefined) {
+      hits++;
+      return found;
+    }
+    if (lookups === 512 && hits * 4 < lookups) caching = false;
+    const made = str(key);
+    if (keyTokens.size < 1024) keyTokens.set(key, made);
+    return made;
+  };
 
   while (stack.length > 0) {
-    const op = stack.pop()!;
+    const cursor = stack.pop()!;
 
-    if (op.k === 1) {
-      emit(op.s);
+    if (cursor.k === 1) {
+      emit(cursor.s);
       continue;
     }
-    if (op.k === 3) {
-      acc.push([]);
+    if (cursor.k === 3) {
+      openBuffer();
       continue;
     }
-    if (op.k === 4) {
-      frames[frames.length - 1]!.items.push(acc.pop()!.join(""));
+    if (cursor.k === 4) {
+      frames[frames.length - 1]!.items.push(closeBuffer());
       continue;
     }
-    if (op.k === 2) {
-      if (op.sort) {
+    if (cursor.k === 2) {
+      if (cursor.sort) {
         const frame = frames.pop()!;
         frame.items.sort();
         emit(frame.items.join(""));
@@ -233,35 +361,34 @@ function encode(value: unknown, options: ImprintOptions, tree: boolean): Encoded
         // The node's own buffer holds its header and every child token, in
         // final order. Joining it here is what makes the subtree addressable,
         // and it is also the whole reason tree mode is not linear.
-        const token = acc.pop()!.join("");
-        nodes.set(op.o, token);
+        const token = closeBuffer();
+        nodes.set(cursor.o!, token);
         emit(token);
       }
-      ancestors.delete(op.o);
+      ancestors.delete(cursor.o!);
       depth--;
       continue;
     }
 
-    const v = op.v;
+    // A key token, or the run of primitive siblings that preceded this value.
+    if (cursor.s !== "") emit(cursor.s);
+
+    const v = cursor.v;
 
     // ---------------------------------------------------------- primitives
-    if (v === null) { emit("z"); continue; }
-    if (v === undefined) { emit("u"); continue; }
+    const token = primitiveToken(v);
+    if (token !== null) { emit(token); continue; }
 
     switch (typeof v) {
-      case "boolean": emit(v ? "t" : "f"); continue;
-      case "number": emit(numberToken(v)); continue;
-      case "bigint": emit(`i${v.toString()};`); continue;
-      case "string": emit(str(v)); continue;
       case "symbol":
         throw new UnrepresentableValueError(
           "a symbol is an identity, not content, and has no canonical form",
-          op.p,
+          formatPath(cursor),
         );
       case "function":
         throw new UnrepresentableValueError(
           "a function has no canonical form",
-          op.p,
+          formatPath(cursor),
         );
     }
 
@@ -308,13 +435,13 @@ function encode(value: unknown, options: ImprintOptions, tree: boolean): Encoded
     if (v instanceof WeakMap || v instanceof WeakSet || v instanceof WeakRef) {
       throw new UnrepresentableValueError(
         `${v.constructor.name} holds identities, not content, and has no canonical form`,
-        op.p,
+        formatPath(cursor),
       );
     }
     if (v instanceof Promise) {
       throw new UnrepresentableValueError(
         "a Promise has no canonical form: its value does not exist yet",
-        op.p,
+        formatPath(cursor),
       );
     }
 
@@ -325,42 +452,81 @@ function encode(value: unknown, options: ImprintOptions, tree: boolean): Encoded
       // Its own buffer, so the close op can join a complete token. The default
       // mode deliberately does not do this: buffering every level is what made
       // an earlier version quadratic, and it is a cost only tree mode needs.
-      acc.push([]);
+      openBuffer();
     }
     depth++;
+    const close = op(2, null, "", null, "", SegKind.Root);
+    close.o = obj;
+
+    // A run of primitive children collapses into one string rather than one
+    // stack entry each, and the run that precedes a child worth descending into
+    // rides along on that child's entry. An array of five thousand numbers used
+    // to allocate five thousand work items; it now allocates one.
+    //
+    // `ops` is reused across containers rather than allocated per container. It
+    // is filled, handed to `pushAll`, which copies the references onto the work
+    // stack, and then dead: nothing reads it again before the next container
+    // clears it. A document of five thousand rows built fifteen thousand of
+    // these throwaway arrays.
+    ops.length = 0;
+    pending = "";
+    parent = cursor;
 
     if (v instanceof Map) {
       emit(`m${v.size}:`);
-      if (sortCollections) frames.push({ items: [] });
-      const ops: Op[] = [];
-      let i = 0;
-      for (const [k, val] of v) {
-        // Key and value form ONE item, so sorting can never separate a key from
-        // its value. Sorting them independently would not merely reorder the
-        // output, it would rewrite the data.
-        const pair: Op[] = [
-          { k: 0, v: k, p: `${op.p}<key ${i}>` },
-          { k: 0, v: val, p: `${op.p}<value ${i}>` },
-        ];
-        ops.push(...(sortCollections ? item(pair) : pair));
-        i++;
+      if (sortCollections) {
+        frames.push({ items: [] });
+        let i = 0;
+        for (const [k, val] of v) {
+          // Key and value form ONE item, so sorting can never separate a key
+          // from its value. Sorting them independently would not merely reorder
+          // the output, it would rewrite the data.
+          ops.push(...item([
+            op(0, k, "", cursor, i, SegKind.MapKey),
+            op(0, val, "", cursor, i, SegKind.MapValue),
+          ]));
+          i++;
+        }
+      } else {
+        let i = 0;
+        for (const [k, val] of v) {
+          const kt = primitiveToken(k);
+          if (kt !== null) pending += kt;
+          else descend(k, i, SegKind.MapKey);
+          const vt = primitiveToken(val);
+          if (vt !== null) pending += vt;
+          else descend(val, i, SegKind.MapValue);
+          i++;
+        }
+        flush();
       }
-      ops.push({ k: 2, o: obj, sort: sortCollections });
+      close.sort = sortCollections;
+      ops.push(close);
       pushAll(ops);
       continue;
     }
 
     if (v instanceof Set) {
       emit(`e${v.size}:`);
-      if (sortCollections) frames.push({ items: [] });
-      const ops: Op[] = [];
-      let i = 0;
-      for (const member of v) {
-        const one: Op[] = [{ k: 0, v: member, p: `${op.p}<member ${i}>` }];
-        ops.push(...(sortCollections ? item(one) : one));
-        i++;
+      if (sortCollections) {
+        frames.push({ items: [] });
+        let i = 0;
+        for (const member of v) {
+          ops.push(...item([op(0, member, "", cursor, i, SegKind.SetMember)]));
+          i++;
+        }
+      } else {
+        let i = 0;
+        for (const member of v) {
+          const mt = primitiveToken(member);
+          if (mt !== null) pending += mt;
+          else descend(member, i, SegKind.SetMember);
+          i++;
+        }
+        flush();
       }
-      ops.push({ k: 2, o: obj, sort: sortCollections });
+      close.sort = sortCollections;
+      ops.push(close);
       pushAll(ops);
       continue;
     }
@@ -368,38 +534,47 @@ function encode(value: unknown, options: ImprintOptions, tree: boolean): Encoded
     // Arrays never sort: element order IS the value. So no buffering.
     if (Array.isArray(v)) {
       emit(`a${v.length}:`);
-      const ops: Op[] = [];
       for (let i = 0; i < v.length; i++) {
         // A hole is not an explicit undefined at the language level, but both
         // read as undefined and neither carries content, so both encode as `u`.
-        ops.push({ k: 0, v: v[i], p: `${op.p}[${i}]` });
+        const t = primitiveToken(v[i]);
+        if (t !== null) pending += t;
+        else descend(v[i], i, SegKind.Index);
       }
-      ops.push({ k: 2, o: obj, sort: false });
+      flush();
+      ops.push(close);
       pushAll(ops);
       continue;
     }
 
     // Plain objects, null-prototype objects and class instances.
-    const proto = Object.getPrototypeOf(v) as object | null;
+    const proto = Object.getPrototypeOf(obj) as object | null;
     const ctorName =
       proto === null || proto === Object.prototype
         ? null
-        : (v.constructor?.name ?? "");
+        : ((obj as { constructor?: { name?: string } }).constructor?.name ?? "");
 
     // Keys are sorted here, up front, so the container never needs buffering:
     // object key order is not part of the value, and JCS agrees.
-    const keys = Object.keys(v as Record<string, unknown>).sort();
+    const record = obj as Record<string, unknown>;
+    const keys = Object.keys(record);
+    // Most objects come out of `Object.keys` already ordered, and checking is
+    // cheaper than sorting. Both this comparison and the default sort order by
+    // UTF-16 code unit, so they agree on what "sorted" means.
+    for (let i = 1; i < keys.length; i++) {
+      if (keys[i - 1]! > keys[i]!) { keys.sort(); break; }
+    }
     if (ctorName !== null) emit(`c${raw(ctorName)}`);
     emit(`${proto === null ? "O" : "o"}${keys.length}:`);
 
-    const ops: Op[] = [];
     for (const key of keys) {
-      ops.push(
-        { k: 1, s: str(key) },
-        { k: 0, v: (v as Record<string, unknown>)[key], p: op.p ? `${op.p}.${key}` : key },
-      );
+      pending += keyToken(key);
+      const t = primitiveToken(record[key]);
+      if (t !== null) pending += t;
+      else descend(record[key], key, SegKind.Key);
     }
-    ops.push({ k: 2, o: obj, sort: false });
+    flush();
+    ops.push(close);
     pushAll(ops);
   }
 

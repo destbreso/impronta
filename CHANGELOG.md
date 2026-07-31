@@ -2,6 +2,45 @@
 
 All notable changes to this project are documented here.
 
+## 0.2.1
+
+Faster, with byte-identical output. No API change, no grammar change.
+
+Roughly **1.5x** on a document of five thousand mixed rows, **1.9x** on Map and
+Set heavy input, and **1.4x** on a long array of primitives, measured against
+0.2.0 on the same machine with interleaved runs and medians rather than one
+timed loop each. That methodology is not a detail: a single sample per variant
+first told me two of these changes made things slower, and they do not.
+
+The profile said the time was not where guessing put it. Very little was
+arithmetic; most was allocation, and a fifth of the run was the garbage
+collector.
+
+- **Error paths are built on the error path.** Every value used to compose the
+  string naming its position, so that a throw could report it. Almost no caller
+  ever sees one, and it cost 15% of every run. A work item now carries a parent
+  link and one raw segment, and the string is composed on the way out of a
+  throw. The messages are unchanged, and there is a test for each shape of path.
+- **A run of primitive siblings is one work item, not one each.** An array of
+  ten thousand numbers allocated ten thousand stack entries to emit ten thousand
+  short strings. The run collapses into one string, and the run preceding a
+  child worth descending into rides along on that child's entry.
+- **One work-item shape instead of five.** Every `op.k` read was polymorphic in
+  the hottest loop in the library.
+- **The per-container work array is reused.** It is filled, copied onto the work
+  stack, and then dead, so a document of five thousand rows was building fifteen
+  thousand throwaway arrays.
+- **Key tokens are interned, and the cache gives up when they do not repeat.** A
+  document of rows repeats the same field names on every row; a flat dictionary
+  of five thousand distinct keys repeats none, and caching made that shape
+  slower than not caching. The cache is bounded and switches itself off after a
+  sample with a poor hit rate, so both shapes come out ahead.
+- **Object keys are checked for order before being sorted**, since most come out
+  of `Object.keys` already in order and checking is cheaper than sorting.
+
+Verified byte for byte against 0.2.0 over 80,000 encodings in both ordering
+modes, 22,444 subtree imprints, 1,230 cyclic values, and every error path.
+
 ## 0.2.0
 
 Adds `imprintTree`, which returns the imprint of a value together with the
