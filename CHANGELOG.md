@@ -2,6 +2,18 @@
 
 All notable changes to this project are documented here.
 
+## 0.3.1
+
+The engine is unchanged. This release is about the distance between what the package does and what its page said it does.
+
+**Four public methods shipped in 0.3.0 with no test of any kind.** `sameAs`, `bucket`, `size` and `keyWithin` are the cheap-comparison half of `imprintTree`, the part a diff engine actually calls, and a grep for their names across `test/` returned nothing: their only exercise was a script that is not in `npm test`. They are tested now, on the properties they promise rather than on happy paths, that `sameAs` agrees with comparing two imprints across every pair of nodes in two documents, that equal imprints always land in the same bucket, that `size` is exactly the length `get` would build, and that `keyWithin` inlines the token under its limit and falls back to the bucket above it.
+
+**The published README was two versions behind the code it described.** It documented `imprintTree` as `{ root, get }`, omitting all four methods above. It said "both modes come out linear on both axes" while this repo's own scaling table lists `imprint` at a 1.20 width exponent, superlinear. And it still described the pre-0.3.0 cost model, a string per node costing the sum of all subtree lengths, which 0.3.0 replaced with offsets and a rolling hash.
+
+**The report the README links to was generated at 0.1.2.** Regenerated against this build, and the headline survives unchanged: `impronta.imprint` takes 0 of the ten collision probes where the field takes 1 to 8, and both modes remain unbounded on depth against a field that fails between 1,535 and 7,566 levels.
+
+**The transcription has a runner now.** `npm run report` writes `docs/REPORT.md` and never touches the README, so the two were free to drift and did. `npm run verify:claims` walks the README's comparison table and demands the report agree, and `prepublishOnly` runs the typecheck, the suite, the build and that check rather than the build alone. It caught a real one on its first run: `stable-hash` was written as reaching about 7,000 levels where the report says 7,566, rounded in this package's favour.
+
 ## 0.3.0
 
 `imprintTree` is linear in depth instead of quadratic, and gains three methods

@@ -151,7 +151,7 @@ adapter:
 | fast-json-stable-stringify | 7 | 6/6 | ~5,900 |
 | ohash.serialize | 1 | not JCS | ~1,500 |
 | ohash.hash | 1 | not JCS | ~4,800 |
-| stable-hash | 2 | not JCS | ~7,000 |
+| stable-hash | 2 | not JCS | ~7,600 |
 | object-hash | 1 | not JCS | ~4,800 |
 | **impronta.imprint** | **0** | not JCS | **unbounded** |
 | **impronta.jcs** | 3, all inherent to JSON | **6/6** | **unbounded** |

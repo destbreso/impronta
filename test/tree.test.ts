@@ -194,3 +194,82 @@ describe("imprintTree: depth", () => {
     expect(tree.get(node as object)).toBe(tree.root);
   });
 });
+
+// sameAs, bucket, size and keyWithin: four public methods that 0.3.0 shipped
+// with no test of any kind. They are the cheap-comparison half of the tree's
+// reason for existing, the part a diff engine actually calls, and until now
+// their only exercise was a script that is not in `npm test`.
+describe("the cheap comparisons", () => {
+  const left = { a: [1, 2, 3], b: { deep: "value" }, c: 7 };
+  const right = { a: [1, 2, 3], b: { deep: "other" }, c: 7 };
+
+  it("sameAs agrees with comparing the two imprints, across two trees", () => {
+    const l = imprintTree(left);
+    const r = imprintTree(right);
+
+    // Equal content in different documents.
+    expect(l.sameAs(left.a, r, right.a)).toBe(true);
+    expect(l.get(left.a)).toBe(r.get(right.a));
+
+    // Different content.
+    expect(l.sameAs(left.b, r, right.b)).toBe(false);
+    expect(l.get(left.b)).not.toBe(r.get(right.b));
+
+    // And the whole documents differ, because one leaf does.
+    expect(l.sameAs(left, r, right)).toBe(false);
+  });
+
+  it("sameAs and get answer the same question on every node of a document", () => {
+    const tree = imprintTree(left);
+    const other = imprintTree(right);
+    for (const a of objects(left)) {
+      for (const b of objects(right)) {
+        const byString = tree.get(a) !== undefined && tree.get(a) === other.get(b);
+        expect({ a, b, sameAs: tree.sameAs(a, other, b) }).toEqual({ a, b, sameAs: byString });
+      }
+    }
+  });
+
+  it("bucket is equal whenever the imprints are, which is the only direction it promises", () => {
+    const l = imprintTree(left);
+    const r = imprintTree(right);
+    for (const a of objects(left)) {
+      for (const b of objects(right)) {
+        if (l.get(a) !== undefined && l.get(a) === r.get(b)) {
+          expect({ a, b, bucket: l.bucket(a) }).toEqual({ a, b, bucket: r.bucket(b) });
+        }
+      }
+    }
+  });
+
+  it("size is the length of the string get would build", () => {
+    const tree = imprintTree(left);
+    for (const node of objects(left)) {
+      expect({ node, size: tree.size(node) }).toEqual({ node, size: tree.get(node)?.length });
+    }
+  });
+
+  it("keyWithin inlines a short token and falls back to the bucket", () => {
+    const tree = imprintTree(left);
+    for (const node of objects(left)) {
+      const token = tree.get(node)!;
+      // Generous limit: the token itself comes back, as a string.
+      expect(tree.keyWithin(node, token.length)).toBe(token);
+      // Mean limit: too long to inline, so the integer bucket comes back.
+      const cheap = tree.keyWithin(node, token.length - 1);
+      expect(typeof cheap).toBe("number");
+      expect(cheap).toBe(tree.bucket(node));
+    }
+  });
+
+  it("all four refuse a node that is not in the value at all", () => {
+    const tree = imprintTree(left);
+    const stranger = { not: "here" };
+    const other = imprintTree(right);
+    expect(tree.get(stranger)).toBeUndefined();
+    expect(tree.size(stranger)).toBeUndefined();
+    expect(tree.bucket(stranger)).toBeUndefined();
+    expect(tree.keyWithin(stranger, 1000)).toBeUndefined();
+    expect(tree.sameAs(stranger, other, right.a)).toBe(false);
+  });
+});
