@@ -92,7 +92,13 @@ describe("harness: depth", () => {
     // failure, which only an iterative implementation manages. Measured
     // ceilings elsewhere: json-canonicalize ~1.8k, canonicalize ~4.1k,
     // safe-stable-stringify ~4.1k, fast-json-stable-stringify ~5.9k.
-    expect(runDepth(asImprint, 50_000).maxDepth).toBe(Infinity);
-    expect(runDepth(asJcs, 50_000).maxDepth).toBe(Infinity);
+    // serializer-conformance 0.4.0 turned the second argument from a bare
+    // ceiling into an options object. This call kept passing a number and kept
+    // passing, because vitest does not typecheck: the harness saw an options
+    // object with no `ceiling` and used its default instead of 50,000. A green
+    // suite is not a compiled suite, and `npm run typecheck` was the only thing
+    // in this repo that could tell the two apart.
+    expect(runDepth(asImprint, { ceiling: 50_000 }).maxDepth).toBe(Infinity);
+    expect(runDepth(asJcs, { ceiling: 50_000 }).maxDepth).toBe(Infinity);
   });
 });
