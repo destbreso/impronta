@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented here.
 
+## 0.3.2
+
+The harness was two minors out of date: the devDependency asked for `serializer-conformance@^0.3.0` while the published harness was at 0.4.1, and `^0.3.0` does not accept it. Upgraded, report regenerated, and the headline is unchanged: 0 collisions of the ten probes where the field takes 1 to 8, both modes unbounded on depth.
+
+One correction to what 0.3.1 said about itself. It claimed the README had been overstating linearity, on the grounds that the committed scaling table listed `imprint` at a 1.20 width exponent. That table was generated at 0.1.2, before the 0.2.x work on the cost model. Regenerated against this build, `imprint` measures 0.94 in depth and 1.02 in width, both linear, so the sentence was right about the code and the evidence beside it was stale. Narrowing the claim to depth is still the conservative thing to publish, because these exponents move by more than the linear threshold between runs, but it was not the correction of a falsehood and 0.3.1 should not have called it one.
+
 ## 0.3.1
 
 The engine is unchanged. This release is about the distance between what the package does and what its page said it does.
