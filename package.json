@@ -33,11 +33,12 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "prepublishOnly": "npm run typecheck && npm test && npm run build && npm run verify:claims",
+    "prepublishOnly": "npm run typecheck && npm test && npm run build && npm run verify:lockfile && npm run verify:claims",
     "report": "npm run build && node scripts/report.mjs",
     "differential": "npm run build && node scripts/differential.mjs",
     "sameas": "npm run build && node scripts/sameas.mjs",
-    "verify:claims": "node scripts/verify-claims.mjs"
+    "verify:claims": "node scripts/verify-claims.mjs",
+    "verify:lockfile": "node scripts/verify-lockfile.mjs"
   },
   "keywords": [
     "canonicalization",
